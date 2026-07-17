@@ -247,6 +247,86 @@ pub fn process_client_identifier() -> String {
 pub const CLIENT_MODE_HEADER: &str = "x-grok-client-mode";
 
 /// One-way latch: set to `"headless"` at startup by the non-TUI entry points
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpProxySettings {
+    pub http: Option<String>,
+    pub https: Option<String>,
+    pub no_proxy: Option<Vec<String>>,
+    pub disabled: bool,
+}
+
+static PROXY_SETTINGS: OnceLock<HttpProxySettings> = OnceLock::new();
+
+pub fn initialize_proxy_settings(settings: HttpProxySettings) -> Result<(), &'static str> {
+    PROXY_SETTINGS
+        .set(settings)
+        .map_err(|_| "HTTP proxy settings were already initialized")
+}
+
+fn proxy_settings() -> Option<&'static HttpProxySettings> {
+    PROXY_SETTINGS.get()
+}
+
+pub fn apply_proxy_config(
+    mut builder: reqwest::ClientBuilder,
+    settings: &HttpProxySettings,
+) -> Result<reqwest::ClientBuilder, reqwest::Error> {
+    if settings.disabled {
+        return Ok(builder.no_proxy());
+    }
+    let no_proxy = settings
+        .no_proxy
+        .as_ref()
+        .and_then(|entries| reqwest::NoProxy::from_string(&entries.join(",")));
+    if let Some(http) = &settings.http {
+        builder = builder.proxy(reqwest::Proxy::http(http)?.no_proxy(no_proxy.clone()));
+    }
+    if let Some(https) = &settings.https {
+        builder = builder.proxy(reqwest::Proxy::https(https)?.no_proxy(no_proxy));
+    }
+    Ok(builder)
+}
+
+pub fn apply_blocking_proxy_config(
+    mut builder: reqwest::blocking::ClientBuilder,
+    settings: &HttpProxySettings,
+) -> Result<reqwest::blocking::ClientBuilder, reqwest::Error> {
+    if settings.disabled {
+        return Ok(builder.no_proxy());
+    }
+    let no_proxy = settings
+        .no_proxy
+        .as_ref()
+        .and_then(|entries| reqwest::NoProxy::from_string(&entries.join(",")));
+    if let Some(http) = &settings.http {
+        builder = builder.proxy(reqwest::Proxy::http(http)?.no_proxy(no_proxy.clone()));
+    }
+    if let Some(https) = &settings.https {
+        builder = builder.proxy(reqwest::Proxy::https(https)?.no_proxy(no_proxy));
+    }
+    Ok(builder)
+}
+
+fn apply_global_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    match proxy_settings() {
+        Some(settings) => {
+            apply_proxy_config(builder, settings).expect("failed to apply HTTP proxy settings")
+        }
+        None => builder,
+    }
+}
+
+fn apply_global_blocking_proxy(
+    builder: reqwest::blocking::ClientBuilder,
+) -> reqwest::blocking::ClientBuilder {
+    match proxy_settings() {
+        Some(settings) => apply_blocking_proxy_config(builder, settings)
+            .expect("failed to apply HTTP proxy settings"),
+        None => builder,
+    }
+}
+
 /// (`run_single_turn` for `grok -p`, `run_headless_inner` for
 /// `grok agent [headless]`), `"interactive"` otherwise.
 static CLIENT_MODE: OnceLock<&'static str> = OnceLock::new();
@@ -284,7 +364,7 @@ pub fn shared_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             let _timer = startup_timer!("startup.http_client_build");
-            reqwest::Client::builder()
+            apply_global_proxy(reqwest::Client::builder())
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .user_agent(process_user_agent_string())
                 .pool_idle_timeout(std::time::Duration::from_secs(30))
@@ -326,7 +406,7 @@ pub fn shared_upload_client() -> reqwest::Client {
     static UPLOAD_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     UPLOAD_CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
+            apply_global_proxy(reqwest::Client::builder())
                 // Force HTTP/1.1: batch_upload multipart bodies are silently
                 // dropped when an HTTP/2 connection degrades (GOAWAY, flow-control
                 // exhaustion). Because all streams share one connection, a single
@@ -348,7 +428,7 @@ pub fn shared_upload_client() -> reqwest::Client {
 /// connect timeout (callers bound each request with their own total timeout). The retry escape
 /// policy that reaches for this client to dodge a poisoned pool lives on `send_with_retry_escaping_pool`.
 pub(crate) fn fresh_http1_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    apply_global_proxy(reqwest::Client::builder())
         .http1_only()
         .pool_max_idle_per_host(0)
         .user_agent(process_user_agent_string())
@@ -493,7 +573,7 @@ pub fn shared_blocking_client() -> reqwest::blocking::Client {
     BLOCKING_CLIENT
         .get_or_init(|| {
             let _timer = startup_timer!("startup.http_blocking_client_build");
-            reqwest::blocking::Client::builder()
+            apply_global_blocking_proxy(reqwest::blocking::Client::builder())
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent(process_user_agent_string())
@@ -632,5 +712,43 @@ mod tests {
         };
 
         assert_eq!(ua.render(), "grok-shell/0.1.171 (macos; aarch64)");
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test]
+    fn apply_proxy_settings_accepts_supported_proxy_schemes() {
+        for proxy in [
+            "http://127.0.0.1:8080",
+            "https://127.0.0.1:8080",
+            "socks5://127.0.0.1:1080",
+            "socks5h://127.0.0.1:1080",
+        ] {
+            let settings = HttpProxySettings {
+                http: Some(proxy.to_string()),
+                https: Some(proxy.to_string()),
+                no_proxy: Some(vec!["localhost".to_string(), "127.0.0.1".to_string()]),
+                disabled: false,
+            };
+            let client = apply_proxy_config(reqwest::Client::builder(), &settings)
+                .unwrap()
+                .build();
+            assert!(client.is_ok(), "proxy scheme should be accepted: {proxy}");
+        }
+    }
+
+    #[test]
+    fn apply_proxy_settings_can_disable_environment_proxies() {
+        let settings = HttpProxySettings {
+            disabled: true,
+            ..Default::default()
+        };
+        let client = apply_proxy_config(reqwest::Client::builder(), &settings)
+            .unwrap()
+            .build();
+        assert!(client.is_ok());
     }
 }
