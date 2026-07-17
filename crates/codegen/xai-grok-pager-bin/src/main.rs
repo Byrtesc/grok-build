@@ -1589,6 +1589,36 @@ fn install_heap_profile_hooks() {
         prof_available: jemalloc_prof_available,
     });
 }
+
+fn initialize_global_http_proxy() {
+    let raw_config = match xai_grok_shell::config::load_effective_config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Couldn't start Grok: failed to load config for proxy settings: {e}");
+            std::process::exit(2);
+        }
+    };
+    let resolved =
+        match xai_grok_config::resolve_network_proxy(&raw_config, &xai_grok_config::StdEnvironment)
+        {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                eprintln!("Couldn't start Grok: {e}");
+                std::process::exit(2);
+            }
+        };
+    let settings = xai_grok_shell::http::HttpProxySettings {
+        http: resolved.http.as_ref().map(ToString::to_string),
+        https: resolved.https.as_ref().map(ToString::to_string),
+        no_proxy: resolved.no_proxy.clone(),
+        disabled: resolved.disabled,
+    };
+    if let Err(e) = xai_grok_shell::http::initialize_proxy_settings(settings) {
+        eprintln!("Couldn't start Grok: {e}");
+        std::process::exit(2);
+    }
+}
+
 fn main() {
     xai_grok_pager_minimal::install();
     #[cfg(all(feature = "jemalloc", unix))]
@@ -1616,6 +1646,7 @@ fn main() {
         );
         std::process::exit(2);
     }
+    initialize_global_http_proxy();
     let _sentry_guard = xai_grok_telemetry::sentry::init(xai_grok_telemetry::sentry::Config {
         client: "grok-pager",
         client_version: PAGER_CLIENT_VERSION,

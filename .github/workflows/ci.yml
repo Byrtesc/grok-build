@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install Rust components
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+      - name: Cache cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install DotSlash
+        run: |
+          cargo install dotslash --locked
+          dotslash --help
+      - name: Check protoc
+        run: |
+          if [ -x bin/protoc ]; then bin/protoc --version; else protoc --version; fi
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check crates
+        run: |
+          cargo check -p xai-grok-config
+          cargo check -p xai-grok-http
+          cargo check -p xai-grok-pager-bin
+      - name: Test crates
+        run: |
+          cargo test -p xai-grok-config
+          cargo test -p xai-grok-http
+      - name: Clippy
+        run: |
+          cargo clippy -p xai-grok-config --all-targets -- -D warnings
+          cargo clippy -p xai-grok-http --all-targets -- -D warnings
+          cargo clippy -p xai-grok-pager-bin --all-targets -- -D warnings

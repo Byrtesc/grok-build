@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+            ext: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: linux-aarch64
+            ext: tar.gz
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            ext: zip
+          - os: macos-15
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+            ext: tar.gz
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install Rust components
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Resolve tag and validate version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then TAG="${{ inputs.tag }}"; fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]
+          VERSION="${TAG#v}"
+          MANIFEST_VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="xai-grok-pager-bin"))')
+          test "$VERSION" = "$MANIFEST_VERSION"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Build
+        shell: bash
+        run: cargo build -p xai-grok-pager-bin --profile release-dist --locked --target "${{ matrix.target }}"
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          dir="grok-${TAG}-${{ matrix.name }}"
+          mkdir -p "$dir"
+          cp "target/${{ matrix.target }}/release-dist/xai-grok-pager" "$dir/grok"
+          cp LICENSE THIRD-PARTY-NOTICES README.md "$dir/"
+          "$dir/grok" --version
+          tar -czf "grok-${TAG}-${{ matrix.name }}.tar.gz" "$dir"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "grok-$env:TAG-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release-dist\xai-grok-pager.exe" "$dir\grok.exe"
+          Copy-Item LICENSE,THIRD-PARTY-NOTICES,README.md $dir
+          & "$dir\grok.exe" --version
+          Compress-Archive -Path $dir -DestinationPath "grok-$env:TAG-${{ matrix.name }}.zip" -Force
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.name }}
+          path: grok-${{ env.TAG }}-${{ matrix.name }}.${{ matrix.ext }}
+          retention-days: 10
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: artifacts
+      - name: Checksums
+        run: |
+          find artifacts -type f -maxdepth 2 -print -exec cp {} . \;
+          sha256sum grok-v* > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Publish release
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') || contains(inputs.tag, 'alpha') || contains(inputs.tag, 'beta') || contains(inputs.tag, 'rc') }}
+          files: |
+            grok-v*.tar.gz
+            grok-v*.zip
+            SHA256SUMS
