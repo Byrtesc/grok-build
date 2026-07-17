@@ -765,7 +765,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(text, "great /pr-workflow go");
-                assert_eq!(skill_token_ranges, &vec![6..18]);
+                assert_eq!(
+                    skill_token_ranges,
+                    &std::iter::once(6..18).collect::<Vec<_>>()
+                );
             }
             other => panic!("expected plain SendPrompt, got {other:?}"),
         }

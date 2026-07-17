@@ -47,7 +47,7 @@ fn format_acp_error_rate_limit_surfaces_detail_or_fallback() {
 /// byte pairs; the text itself is untouched.
 #[test]
 fn plain_prompt_block_stamps_skill_token_ranges_meta() {
-    let block = plain_prompt_content_block("great /pr-workflow go".into(), &[6..18]);
+    let block = plain_prompt_content_block("great /pr-workflow go".into(), &std::iter::once(6..18).collect::<Vec<_>>());
     let acp::ContentBlock::Text(tb) = block else {
         panic!("expected text block");
     };

@@ -232,7 +232,7 @@ fn slash_plan_desc_forwards_skill_token_ranges() {
             assert_eq!(text, "great /pr-workflow go");
             assert_eq!(
                 skill_token_ranges,
-                &vec![6..18],
+                &std::iter::once(6..18).collect::<Vec<_>>(),
                 "offsets recomputed against the stripped desc"
             );
         }

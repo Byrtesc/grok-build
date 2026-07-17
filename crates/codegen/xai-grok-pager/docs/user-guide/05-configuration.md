@@ -836,3 +836,69 @@ When the same server name is defined by more than one source, it is resolved in 
 3. **Plugins** -- file-based `.lsp.json`, then inline `lspServers`, in plugin load order
 
 Project and user entries replace lower-priority ones with the same name. Plugin entries only add servers whose names are not already defined by a local file, so a local `lsp.json` always wins over a plugin. Plugin LSP servers load only after the plugin is trusted (see [Plugins](09-plugins.md)).
+
+## Global proxy configuration
+
+Grok Build continues to honor the standard proxy environment variables by default: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and their lower-case equivalents. Upper-case variables take precedence when both cases are present.
+
+Configure Grok Build's own network clients in `~/.grok/config.toml`:
+
+```toml
+[network.proxy]
+mode = "auto"
+all = "http://127.0.0.1:7890"
+no_proxy = ["localhost", "127.0.0.1", "::1"]
+```
+
+Per-protocol configuration is also supported:
+
+```toml
+[network.proxy]
+mode = "config"
+http = "http://127.0.0.1:7890"
+https = "http://127.0.0.1:7890"
+no_proxy = ["localhost", "127.0.0.1", "::1", "*.local"]
+```
+
+SOCKS proxies can use `socks5://` or `socks5h://`:
+
+```toml
+[network.proxy]
+mode = "config"
+all = "socks5h://127.0.0.1:7891"
+no_proxy = ["localhost", "127.0.0.1", "::1"]
+```
+
+Set `mode = "disabled"` to force direct connections and ignore all proxy environment variables:
+
+```toml
+[network.proxy]
+mode = "disabled"
+```
+
+Modes and precedence:
+
+- `auto` (default): TOML `http`/`https` > TOML `all` > `HTTP_PROXY`/`HTTPS_PROXY` > `ALL_PROXY` > direct.
+- `config`: only TOML `all`, `http`, and `https` are used; environment proxy variables are ignored.
+- `disabled`: all TOML and environment proxies are disabled for Grok Build's own clients.
+- TOML `no_proxy` wins over `NO_PROXY`/`no_proxy` when explicitly set.
+
+Complete example:
+
+```toml
+[network.proxy]
+mode = "config"
+all = "http://127.0.0.1:7890"
+no_proxy = ["localhost", "127.0.0.1", "::1"]
+
+[models]
+default = "sub2api-grok45"
+
+[model.sub2api-grok45]
+model = "grok-4.5"
+base_url = "https://example-proxy.invalid/v1"
+api_backend = "responses"
+api_key = "sk-replace-me"
+```
+
+Restart Grok Build after changing proxy settings. The setting only controls HTTP clients created inside Grok Build; child processes and external shell commands still use their inherited environment variables. If `config.toml` contains proxy credentials, restrict the file permissions. The existing 600 second SSE timeout and `GROK_POOL_IDLE_TIMEOUT_SECS` are unaffected; proxy idle timeouts should still be at least 10 minutes for streaming requests.

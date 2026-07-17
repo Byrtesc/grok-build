@@ -3,7 +3,8 @@
     unused_variables,
     unused_mut,
     unreachable_code,
-    dead_code
+    dead_code,
+    clippy::possible_missing_else
 )]
 pub(crate) use xai_grok_telemetry::unified_log;
 pub use xai_tracing_macros::{teprintln, timed, tprintln};
